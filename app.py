@@ -1,30 +1,45 @@
-from loader import db
-from utils.db_api import postgresql
+import asyncio
+import logging
 
-async def on_startup(dp):
-    import filters
-    import middlewares
-    
-    from handlers.users.scheduled import start_checker
-    await start_checker(dp)
+from aiogram import Bot, Dispatcher
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiogram.types import ParseMode
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import sessionmaker
 
-    filters.setup(dp)
-    middlewares.setup(dp)
+from src import config
+from src.handlers import register_commands
+from src.services.db import base
 
-    # connecting to DB
-    await postgresql.on_startup(dp)
 
-    # drop tables
-    # await db.gino.drop_all()
+async def main():
 
-    # creating tables
-    await db.gino.create_all()
+    logging.basicConfig(
+        format=u'[%(asctime)s] %(filename)s [LINE:%(lineno)d] #%(levelname)-8s  %(message)s',
+        level=logging.INFO
+    )
 
-    from utils.notify_admins import on_startup_notify
-    await on_startup_notify(dp)
+    engine = await base.async_main()
+    async_sessionmaker = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-if __name__ == '__main__':
-    from aiogram import executor
-    from handlers import dp
+    bot = Bot(config.BOT_TOKEN, parse_mode=ParseMode.HTML, validate_token=True)
+    bot["db"] = async_sessionmaker
 
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    storage = MemoryStorage()
+    dp = Dispatcher(bot, storage=storage)
+
+    register_commands(dp)
+
+    try:
+        await dp.start_polling()
+    finally:
+        await dp.storage.close()
+        await dp.storage.wait_closed()
+        await bot.session.close()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.error("Bot stopped!")
