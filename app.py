@@ -1,41 +1,47 @@
 import asyncio
 import logging
+from typing import Callable
 
 from aiogram import Bot, Dispatcher
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.types import ParseMode
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, AsyncEngine, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from src import config
-from src.handlers import register_commands
-from src.services.db import base
+from src import handlers
+from src.middlewares.database import DatabaseMiddleware
+from src.database.models import Base
+from src.utils import logger
 
 
 async def main():
 
-    logging.basicConfig(
-        format=u'[%(asctime)s] %(filename)s [LINE:%(lineno)d] #%(levelname)-8s  %(message)s',
-        level=logging.INFO
-    )
+    logger.info("Bot started!")
+    logger.debug("Debug mode is on!")
 
-    engine = await base.async_main()
-    async_sessionmaker = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    engine: AsyncEngine = create_async_engine(config.POSTGRES_URI, echo=False, future=True)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async_sessionmaker: Callable = sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
     bot = Bot(config.BOT_TOKEN, parse_mode=ParseMode.HTML, validate_token=True)
-    bot["db"] = async_sessionmaker
 
     storage = MemoryStorage()
     dp = Dispatcher(bot, storage=storage)
 
-    register_commands(dp)
+    dp.middleware.setup(DatabaseMiddleware(async_sessionmaker))
+
+    handlers.register_commands(dp)
 
     try:
         await dp.start_polling()
     finally:
         await dp.storage.close()
         await dp.storage.wait_closed()
-        await bot.session.close()
+        session = await bot.get_session()
+        await session.close()
 
 
 if __name__ == "__main__":
